@@ -100,9 +100,17 @@ def check_bars(bars, tf_minutes):
             d = b["t"] - bars[i - 1]["t"]
             if d <= 0:
                 problems.append("bar %d: not strictly increasing" % i)
-            elif d > step * 3 and d < 2 * 86400 - step:  # weekends are expected; flag other holes
-                problems.append("bar %d: gap of %d min" % (i, d // 60))
+            elif d > max(step * 3, 7200) and not _weekend_gap(bars[i - 1]["t"], b["t"]):
+                # short daily breaks (gold closes ~1h a day) and weekends are normal; anything else is a hole
+                problems.append("bar %d: gap of %.1f h before %s" % (
+                    i, d / 3600.0, time.strftime("%Y-%m-%d %H:%M", time.gmtime(b["t"]))))
     return problems
+
+
+def _weekend_gap(t0, t1):
+    """True when the hole between two bars is just the weekend close (Fri evening -> Sun evening/Mon, UTC)."""
+    wd0, wd1 = time.gmtime(t0).tm_wday, time.gmtime(t1).tm_wday      # Mon=0 .. Sun=6
+    return wd0 in (4, 5) and wd1 in (6, 0) and t1 - t0 <= 3 * 86400
 
 
 def read_csv_bars(path, delimiter=None):
@@ -212,7 +220,9 @@ def cmd_bars(a):
     print("%s %s: %d bars, %s -> %s UTC (server offset %+.1fh)" % (
         symbol, a.tf, len(bars), time.strftime("%Y-%m-%d %H:%M", time.gmtime(bars[0]["t"])),
         time.strftime("%Y-%m-%d %H:%M", time.gmtime(bars[-1]["t"])), off / 3600.0))
-    print("data check: %s" % ("clean" if not problems else "%d problem(s), first: %s" % (len(problems), problems[0])))
+    print("data check: %s" % ("clean" if not problems else "%d problem(s)" % len(problems)))
+    for pr in problems[:a.show]:
+        print("  " + pr)
     if a.write:
         path = os.path.join("trader", "bars", "%s_%s.json" % (symbol, a.tf))
         write_json(path, {"symbol": symbol, "tf": a.tf, "server_offset_s": off, "spec": spec, "bars": bars})
@@ -232,6 +242,7 @@ def main(argv=None):
     p.add_argument("--csv")
     p.add_argument("--server-offset", type=float, default=None, help="broker clock minus UTC, hours")
     p.add_argument("--write", action="store_true")
+    p.add_argument("--show", type=int, default=5, help="how many data problems to list")
     p.set_defaults(fn=cmd_bars)
     a = ap.parse_args(argv)
     try:

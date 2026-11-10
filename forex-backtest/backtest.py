@@ -94,6 +94,57 @@ def size_lots(equity, risk_pct, stop_pips, spec):
     return round(lots, 8)
 
 
+# ------------------------------------------------------------------ shared helpers
+
+def daily_adr(bars, n=20, min_days=5):
+    """day -> average daily range (price units) of the PREVIOUS n days. Causal: today's own range is not used."""
+    hl = {}
+    for b in bars:
+        d = b["t"] // DAY
+        r = hl.setdefault(d, [b["h"], b["l"]])
+        r[0], r[1] = max(r[0], b["h"]), min(r[1], b["l"])
+    out, prev = {}, []
+    for d in sorted(hl):
+        if len(prev) >= min_days:
+            out[d] = sum(prev[-n:]) / len(prev[-n:])
+        prev.append(hl[d][0] - hl[d][1])
+    return out
+
+
+def resample(bars, minutes):
+    """Aggregate bars into bigger ones (e.g. M5 -> M15). Spread: the widest seen in the group."""
+    step, out = minutes * 60, []
+    for b in bars:
+        t = b["t"] // step * step
+        if out and out[-1]["t"] == t:
+            o = out[-1]
+            o["h"], o["l"], o["c"] = max(o["h"], b["h"]), min(o["l"], b["l"]), b["c"]
+            o["v"] += b["v"]
+            o["spread"] = max(o["spread"], b.get("spread") or 0)
+        else:
+            out.append({"t": t, "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"],
+                        "spread": b.get("spread") or 0})
+    return out
+
+
+def ema_series(values, n):
+    k, out, e = 2.0 / (n + 1), [], None
+    for v in values:
+        e = v if e is None else e + k * (v - e)
+        out.append(e)
+    return out
+
+
+def atr_series(bars, n=14):
+    out, a, prev_c = [], None, None
+    for b in bars:
+        tr = b["h"] - b["l"] if prev_c is None else max(b["h"] - b["l"], abs(b["h"] - prev_c), abs(b["l"] - prev_c))
+        a = tr if a is None else a + (tr - a) / n
+        out.append(a)
+        prev_c = b["c"]
+    return out
+
+
 # ------------------------------------------------------------------ strategy: session range breakout
 
 class RangeBreakout:
@@ -102,7 +153,12 @@ class RangeBreakout:
     the stop. One trade a day, flat by flat_hour."""
 
     def __init__(self, tf_min, spec, range_start=0, range_end=7, trade_end=12, flat_hour=16,
-                 rr=1.5, buffer_pips=1.0, min_range_pips=15, max_range_pips=60, min_stop_pips=8):
+                 rr=1.5, buffer_pips=1.0, min_range_pips=15, max_range_pips=60, min_stop_pips=8,
+                 adr_ref_pips=None):
+        # adr_ref_pips: if set, the pip thresholds are written for a symbol whose average daily range is that
+        # many pips (EURUSD ~70) and are scaled to each symbol's own range, so one setting fits gold and JPY too.
+        self.adr_ref = adr_ref_pips
+        self.adr = {}
         self.tf = tf_min * 60
         self.pip = spec["pip"]
         self.p = dict(range_start=range_start, range_end=range_end, trade_end=trade_end, flat_hour=flat_hour,
@@ -113,6 +169,8 @@ class RangeBreakout:
 
     def prepare(self, bars):
         p = self.p
+        if self.adr_ref:
+            self.adr = daily_adr(bars)
         for b in bars:
             day, sec = divmod(b["t"], DAY)
             if p["range_start"] * 3600 <= sec < p["range_end"] * 3600:
@@ -135,18 +193,71 @@ class RangeBreakout:
         need = (p["range_end"] - p["range_start"]) * 3600 // self.tf
         if n < need * 0.8:                               # holes in the range: do not trade it
             return None
+        k = 1.0
+        if self.adr_ref:
+            if day not in self.adr:
+                return None
+            k = self.adr[day] / (self.adr_ref * self.pip)
         width = (hi - lo) / self.pip
-        if not (p["min_range_pips"] <= width <= p["max_range_pips"]):
+        if not (p["min_range_pips"] * k <= width <= p["max_range_pips"] * k):
             return None
-        buf = p["buffer_pips"] * self.pip
+        buf = p["buffer_pips"] * k * self.pip
         side = "long" if b["c"] > hi + buf else "short" if b["c"] < lo - buf else None
         if not side:
             return None
         mid = (hi + lo) / 2.0
         stop = abs(b["c"] - mid) / self.pip
-        if stop < p["min_stop_pips"]:
+        if stop < p["min_stop_pips"] * k:
             return None
         self.traded.add(day)
+        return {"side": side, "sl_pips": stop, "tp_pips": stop * p["rr"]}
+
+
+# ------------------------------------------------------------------ strategy: trend pullback
+
+class TrendPullback:
+    """Trade with the trend after a dip. Trend: EMA(fast) above EMA(slow) for longs (below for shorts).
+    Trigger: the previous bar closed on the wrong side of EMA(pull) and this bar closes back on the trend side.
+    Stop atr_mult x ATR(14), target rr x the stop. Only inside [start_hour, end_hour) UTC, flat by flat_hour,
+    at most max_per_day trades a day."""
+
+    def __init__(self, tf_min, spec, fast=50, slow=200, pull=20, atr_mult=1.5, rr=1.5,
+                 start_hour=7, end_hour=17, flat_hour=20, max_per_day=2):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(fast=fast, slow=slow, pull=pull, atr_mult=atr_mult, rr=rr, start_hour=start_hour,
+                      end_hour=end_hour, flat_hour=flat_hour, max_per_day=max_per_day)
+        self.count = {}
+
+    def prepare(self, bars):
+        closes = [b["c"] for b in bars]
+        self.ef, self.es = ema_series(closes, self.p["fast"]), ema_series(closes, self.p["slow"])
+        self.ep, self.atr = ema_series(closes, self.p["pull"]), atr_series(bars)
+
+    def flat_ts(self, t):
+        return (t // DAY) * DAY + self.p["flat_hour"] * 3600
+
+    def on_bar(self, bars, i):
+        p = self.p
+        if i < p["slow"] * 3:                              # let the slow EMA settle
+            return None
+        day, sec = divmod(bars[i]["t"] + self.tf, DAY)
+        if not (p["start_hour"] * 3600 <= sec < p["end_hour"] * 3600):
+            return None
+        if self.count.get(day, 0) >= p["max_per_day"]:
+            return None
+        c, c1 = bars[i]["c"], bars[i - 1]["c"]
+        side = None
+        if self.ef[i] > self.es[i] and c1 < self.ep[i - 1] and c > self.ep[i] and c > self.es[i]:
+            side = "long"
+        elif self.ef[i] < self.es[i] and c1 > self.ep[i - 1] and c < self.ep[i] and c < self.es[i]:
+            side = "short"
+        if not side:
+            return None
+        stop = p["atr_mult"] * self.atr[i] / self.pip
+        if stop <= 0:
+            return None
+        self.count[day] = self.count.get(day, 0) + 1
         return {"side": side, "sl_pips": stop, "tp_pips": stop * p["rr"]}
 
 
@@ -244,10 +355,22 @@ def cmd_run(a):
     doc = load_bars_file(a.bars)
     bars, spec = doc["bars"], doc["spec"]
     tf_min = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}[doc["tf"]]
-    st = RangeBreakout(tf_min, spec, a.range_start, a.range_end, a.trade_end, a.flat_hour, a.rr,
-                       a.buffer_pips, a.min_range, a.max_range, a.min_stop)
-    res = run_backtest(bars, spec, st, a.equity, a.risk, a.slip, int(a.min_spread_pips * spec["pip"] / spec["point"]),
+    if a.resample:
+        if a.resample <= tf_min or a.resample % tf_min:
+            raise BacktestError("--resample must be a multiple of the file's timeframe (%d min)" % tf_min)
+        bars, tf_min = resample(bars, a.resample), a.resample
+    # scale pip-based settings to this symbol's own daily range (reference: a 70-pip-a-day pair)
+    adr = sorted(daily_adr(bars).values())
+    k = (adr[len(adr) // 2] / (a.adr_ref * spec["pip"])) if adr and a.adr_ref else 1.0
+    slip = a.slip * k
+    if a.strategy == "breakout":
+        st = RangeBreakout(tf_min, spec, a.range_start, a.range_end, a.trade_end, a.flat_hour, a.rr,
+                           a.buffer_pips, a.min_range, a.max_range, a.min_stop, a.adr_ref or None)
+    else:
+        st = TrendPullback(tf_min, spec, rr=a.rr, atr_mult=a.atr_mult)
+    res = run_backtest(bars, spec, st, a.equity, a.risk, slip, int(a.min_spread_pips * spec["pip"] / spec["point"]),
                        a.commission)
+    print("strategy: %s | slippage %.2f pips a fill" % (a.strategy, slip))
     trades = res["trades"]
     first, last = bars[0]["t"], bars[-1]["t"]
     cut = first + (last - first) * a.split
@@ -267,7 +390,7 @@ def cmd_run(a):
     print("exits: " + ", ".join("%s %d" % kv for kv in sorted(reasons.items())))
     print("VERDICT: " + verdict(s_in, s_out) if s_out["trades"] else "VERDICT: no out-of-sample trades.")
     if a.write:
-        path = os.path.join("trader", "backtests", "%s_%s.json" % (doc["symbol"], doc["tf"]))
+        path = os.path.join("trader", "backtests", "%s_%s_%s.json" % (doc["symbol"], doc["tf"], a.strategy))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump({"result": res, "params": vars(a)}, f)
@@ -279,6 +402,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run")
     p.add_argument("--bars", required=True)
+    p.add_argument("--strategy", choices=["breakout", "pullback"], default="breakout")
+    p.add_argument("--resample", type=int, default=0, help="aggregate bars to this many minutes first")
+    p.add_argument("--adr-ref", type=float, default=70.0,
+                   help="pip settings assume this average daily range and are scaled per symbol; 0 = off")
+    p.add_argument("--atr-mult", type=float, default=1.5, help="pullback: stop = this x ATR(14)")
     p.add_argument("--equity", type=float, default=300.0)
     p.add_argument("--risk", type=float, default=1.0, help="percent of equity risked per trade")
     p.add_argument("--rr", type=float, default=1.5)

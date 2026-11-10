@@ -54,7 +54,7 @@ class BarTests(unittest.TestCase):
     def test_check_bad_ohlc_and_gap(self):
         bars = m.rates_to_bars(self.rates(), 7200)
         bars[1]["h"] = 1.0
-        bars[3]["t"] += 3600
+        bars[3]["t"] += 5 * 3600   # holes over 2h that are not a weekend are flagged
         p = m.check_bars(bars, 5)
         self.assertTrue(any("OHLC" in x for x in p))
         self.assertTrue(any("gap" in x for x in p))
