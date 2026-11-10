@@ -528,6 +528,69 @@ class ValueReturn:
         return {"side": side, "sl_pips": stop, "tp_pips": tp}
 
 
+class FvgRetrace:
+    """ICT fair value gap, first retest. A strong candle (range >= disp_atr x ATR) leaves a gap between the
+    candle before it and the candle after it. The first time price trades back into that gap and closes out of
+    it again in the direction of the strong candle, enter that way. Stop beyond the retest bar's
+    extreme. Target rr x the stop. Kill zones only, out after max_hold_min."""
+
+    def __init__(self, tf_min, spec, rr=2.0, max_hold_min=1440, lookback=12, disp_atr=1.5, buffer_pips=0.5,
+                 min_stop_pips=8, max_stop_pips=40, adr_ref_pips=70):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(rr=rr, max_hold=max_hold_min * 60, lookback=lookback, disp_atr=disp_atr,
+                      buffer_pips=buffer_pips, min_stop_pips=min_stop_pips, max_stop_pips=max_stop_pips,
+                      adr_ref=adr_ref_pips)
+        self.used = set()
+
+    def prepare(self, bars):
+        atr = atr_series(bars)
+        self.adr = daily_adr(bars)
+        self.gaps = {}                                      # index of the gap's third candle -> (dir, bottom, top)
+        for j in range(16, len(bars)):
+            a, m, c = bars[j - 2], bars[j - 1], bars[j]
+            if m["h"] - m["l"] < self.p["disp_atr"] * atr[j - 2]:
+                continue
+            if c["l"] > a["h"] and m["c"] > m["o"]:
+                self.gaps[j] = (1, a["h"], c["l"])
+            elif c["h"] < a["l"] and m["c"] < m["o"]:
+                self.gaps[j] = (-1, c["h"], a["l"])
+
+    def flat_ts(self, t):
+        return t + self.p["max_hold"]
+
+    def on_bar(self, bars, i):
+        p, b = self.p, bars[i]
+        day, sec = divmod(b["t"] + self.tf, DAY)
+        if not in_kill_zone(sec) or day not in self.adr:
+            return None
+        k = self.adr[day] / (p["adr_ref"] * self.pip)
+        buf = p["buffer_pips"] * k * self.pip
+        for j in range(i - 1, max(i - p["lookback"] - 1, 0), -1):
+            g = self.gaps.get(j)
+            if not g or j in self.used:
+                continue
+            d, bot, top = g
+            between = bars[j + 1:i]
+            if d > 0:
+                if any(x["l"] <= top for x in between):       # not the first retest any more
+                    continue
+                if not (b["l"] <= top and b["c"] > top and b["c"] > b["o"]):
+                    continue
+                side, stop = "long", (b["c"] - (b["l"] - buf)) / self.pip
+            else:
+                if any(x["h"] >= bot for x in between):
+                    continue
+                if not (b["h"] >= bot and b["c"] < bot and b["c"] < b["o"]):
+                    continue
+                side, stop = "short", (b["h"] + buf - b["c"]) / self.pip
+            self.used.add(j)
+            if not (p["min_stop_pips"] * k <= stop <= p["max_stop_pips"] * k):
+                continue
+            return {"side": side, "sl_pips": stop, "tp_pips": stop * p["rr"]}
+        return None
+
+
 # ------------------------------------------------------------------ engine
 
 def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3, floor_spread_points=0,
@@ -642,9 +705,13 @@ def cmd_run(a):
         st = BandFade(tf_min, spec)
     elif a.strategy in ("sweep", "sweep-vp"):
         st = LiquiditySweep(tf_min, spec, rr=a.rr, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70,
-                            vp_filter=a.strategy == "sweep-vp")
+                            vp_filter=a.strategy == "sweep-vp", min_stop_pips=a.stop_min, max_stop_pips=a.stop_max)
     elif a.strategy == "vp":
-        st = ValueReturn(tf_min, spec, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70)
+        st = ValueReturn(tf_min, spec, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70,
+                         min_stop_pips=a.stop_min, max_stop_pips=a.stop_max)
+    elif a.strategy == "fvg":
+        st = FvgRetrace(tf_min, spec, rr=a.rr, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70,
+                        min_stop_pips=a.stop_min, max_stop_pips=a.stop_max)
     else:
         st = DonchianTrend(tf_min, spec)
     res = run_backtest(bars, spec, st, a.equity, a.risk, slip, int(a.min_spread_pips * spec["pip"] / spec["point"]),
@@ -681,8 +748,10 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run")
     p.add_argument("--bars", required=True)
-    p.add_argument("--strategy", choices=["breakout", "pullback", "fade", "donchian", "sweep", "sweep-vp", "vp"],
+    p.add_argument("--strategy", choices=["breakout", "pullback", "fade", "donchian", "sweep", "sweep-vp", "vp", "fvg"],
                    default="breakout")
+    p.add_argument("--stop-min", type=float, default=3, help="SMC strategies: smallest stop taken, pips (scaled)")
+    p.add_argument("--stop-max", type=float, default=15, help="SMC strategies: widest stop taken, pips (scaled)")
     p.add_argument("--max-hold", type=int, default=45, help="scalping strategies: minutes before a forced exit")
     p.add_argument("--resample", type=int, default=0, help="aggregate bars to this many minutes first")
     p.add_argument("--adr-ref", type=float, default=70.0,

@@ -128,5 +128,38 @@ class ValueReturnTests(unittest.TestCase):
         self.assertTrue(ctx.prev)
 
 
+class FvgTests(unittest.TestCase):
+    def build(self, retest_close):
+        """H1 bars: 8 quiet days, then at 05:00-07:00 a strong up candle leaves a gap 1.1010-1.1040,
+        and the 08:00 bar dips into it and closes at retest_close."""
+        bars = []
+        for d in range(8):
+            bars += [bar(d * DAY + h * 3600, 1.1000, 1.1010, 1.0990, 1.1000) for h in range(24)]
+        t = 8 * DAY
+        bars += [bar(t + h * 3600, 1.1000, 1.1010, 1.0990, 1.1000) for h in range(5)]
+        bars.append(bar(t + 5 * 3600, 1.1000, 1.1010, 1.0995, 1.1008))     # candle before: high 1.1010
+        bars.append(bar(t + 6 * 3600, 1.1008, 1.1065, 1.1006, 1.1060))     # displacement
+        bars.append(bar(t + 7 * 3600, 1.1060, 1.1070, 1.1040, 1.1065))     # candle after: low 1.1040
+        bars.append(bar(t + 8 * 3600, 1.1065, 1.1068, 1.1030, retest_close))  # dips into the gap
+        bars += [bar(t + h * 3600, 1.1060, 1.1062, 1.1058, 1.1060) for h in range(9, 24)]
+        return bars, len(bars) - 16
+
+    def test_first_retest_goes_long(self):
+        bars, i = self.build(1.1066)
+        s = bt.FvgRetrace(60, SPEC, adr_ref_pips=20)        # these toy days have a 20 pip range
+        s.prepare(bars)
+        self.assertEqual(s.gaps[i - 1][0], 1)
+        sig = s.on_bar(bars, i)
+        self.assertEqual(sig["side"], "long")
+        self.assertAlmostEqual(sig["tp_pips"], sig["sl_pips"] * 2.0)
+        self.assertIsNone(s.on_bar(bars, i))                 # a gap is traded once
+
+    def test_no_entry_if_the_bar_closes_inside_the_gap(self):
+        bars, i = self.build(1.1035)
+        s = bt.FvgRetrace(60, SPEC, adr_ref_pips=20)
+        s.prepare(bars)
+        self.assertIsNone(s.on_bar(bars, i))
+
+
 if __name__ == "__main__":
     unittest.main()
