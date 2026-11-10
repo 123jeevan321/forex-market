@@ -739,7 +739,7 @@ def cmd_run(a):
         path = os.path.join("trader", "backtests", "%s_%s_%s.json" % (doc["symbol"], doc["tf"], a.strategy))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
-            json.dump({"result": res, "params": vars(a)}, f)
+            json.dump({"result": res, "params": {k: v for k, v in vars(a).items() if k != "fn"}}, f)
         print("wrote " + path)
 
 
