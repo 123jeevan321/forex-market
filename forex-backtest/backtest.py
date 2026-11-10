@@ -261,6 +261,101 @@ class TrendPullback:
         return {"side": side, "sl_pips": stop, "tp_pips": stop * p["rr"]}
 
 
+# ------------------------------------------------------------------ strategy: band fade (mean reversion)
+
+def in_hours(sec, start, end):
+    """Is a second-of-day inside [start, end) hours? The window may wrap past midnight (e.g. 23 -> 6)."""
+    s, e = start * 3600, end * 3600
+    return s <= sec < e if s <= e else (sec >= s or sec < e)
+
+
+def next_hour_ts(t, hour):
+    """The first time after t that the UTC clock reads hour:00."""
+    ts = (t // DAY) * DAY + hour * 3600
+    return ts if ts > t else ts + DAY
+
+
+class BandFade:
+    """Bet that a stretched price snaps back, in the quiet hours. Bands: n-bar average +/- k standard
+    deviations. Trigger: the previous bar closed outside a band and this bar closes back inside. Target: the
+    average. Stop: atr_mult x ATR(14). Skips trades whose target is less than min_rr x the stop."""
+
+    def __init__(self, tf_min, spec, n=20, k=2.0, atr_mult=1.5, min_rr=0.7, start_hour=23, end_hour=6,
+                 flat_hour=8, max_per_day=3):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(n=n, k=k, atr_mult=atr_mult, min_rr=min_rr, start_hour=start_hour, end_hour=end_hour,
+                      flat_hour=flat_hour, max_per_day=max_per_day)
+        self.count = {}
+
+    def prepare(self, bars):
+        n, k = self.p["n"], self.p["k"]
+        closes = [b["c"] for b in bars]
+        self.mid, self.up, self.lo = [None] * len(bars), [None] * len(bars), [None] * len(bars)
+        for i in range(n - 1, len(bars)):
+            w = closes[i - n + 1:i + 1]
+            m = sum(w) / n
+            sd = math.sqrt(sum((x - m) ** 2 for x in w) / n)
+            self.mid[i], self.up[i], self.lo[i] = m, m + k * sd, m - k * sd
+        self.atr = atr_series(bars)
+
+    def flat_ts(self, t):
+        return next_hour_ts(t, self.p["flat_hour"])
+
+    def on_bar(self, bars, i):
+        p = self.p
+        if i < p["n"] + 14:
+            return None
+        day, sec = divmod(bars[i]["t"] + self.tf, DAY)
+        if not in_hours(sec, p["start_hour"], p["end_hour"]) or self.count.get(day, 0) >= p["max_per_day"]:
+            return None
+        c, c1 = bars[i]["c"], bars[i - 1]["c"]
+        if c1 < self.lo[i - 1] and self.lo[i] < c < self.mid[i]:
+            side, tp = "long", (self.mid[i] - c) / self.pip
+        elif c1 > self.up[i - 1] and self.up[i] > c > self.mid[i]:
+            side, tp = "short", (c - self.mid[i]) / self.pip
+        else:
+            return None
+        stop = p["atr_mult"] * self.atr[i] / self.pip
+        if stop <= 0 or tp < p["min_rr"] * stop:
+            return None
+        self.count[day] = self.count.get(day, 0) + 1
+        return {"side": side, "sl_pips": stop, "tp_pips": tp}
+
+
+# ------------------------------------------------------------------ strategy: Donchian trend (slow)
+
+class DonchianTrend:
+    """Slow trend following for bigger candles (H4). Trigger: a close beyond the highest high / lowest low of
+    the previous n bars. Stop atr_mult x ATR(14), target rr x the stop. Holds for days: no session filter and
+    no flat time. NOTE: overnight swap charges are NOT modelled, so real results would be a little worse."""
+
+    def __init__(self, tf_min, spec, n=20, atr_mult=2.0, rr=3.0):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(n=n, atr_mult=atr_mult, rr=rr)
+
+    def prepare(self, bars):
+        self.atr = atr_series(bars)
+
+    def flat_ts(self, t):
+        return None
+
+    def on_bar(self, bars, i):
+        n = self.p["n"]
+        if i < n + 14:
+            return None
+        w = bars[i - n:i]                                   # the n bars BEFORE this one
+        c = bars[i]["c"]
+        side = "long" if c > max(b["h"] for b in w) else "short" if c < min(b["l"] for b in w) else None
+        if not side:
+            return None
+        stop = self.p["atr_mult"] * self.atr[i] / self.pip
+        if stop <= 0:
+            return None
+        return {"side": side, "sl_pips": stop, "tp_pips": stop * self.p["rr"]}
+
+
 # ------------------------------------------------------------------ engine
 
 def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3, floor_spread_points=0,
@@ -311,7 +406,10 @@ def summarize(trades, start_equity, end_equity):
     for t in trades:
         cur = cur + 1 if t["pnl"] <= 0 else 0
         streak = max(streak, cur)
-    return {"trades": n, "win_rate": len(wins) / n, "avg_r": sum(t["r"] for t in trades) / n,
+    mean_r = sum(t["r"] for t in trades) / n
+    sd = math.sqrt(sum((t["r"] - mean_r) ** 2 for t in trades) / (n - 1)) if n > 1 else 0.0
+    # t-stat: how many standard errors the average is from zero. Under ~2 it is indistinguishable from luck.
+    return {"trades": n, "win_rate": len(wins) / n, "avg_r": mean_r, "t_stat": mean_r / (sd / math.sqrt(n)) if sd else 0.0,
             "profit_factor": (gp / gl) if gl else float("inf"), "net": sum(t["pnl"] for t in trades),
             "return_pct": (end_equity / start_equity - 1) * 100 if start_equity else 0.0,
             "worst_losing_streak": streak, "avg_pips": sum(t["pips"] for t in trades) / n}
@@ -347,8 +445,8 @@ def fmt(s):
     if not s["trades"]:
         return "  no trades"
     pf = "inf" if s["profit_factor"] == float("inf") else "%.2f" % s["profit_factor"]
-    return ("  trades %d | win %.0f%% | avg %.2f R | profit factor %s | net %+.2f | avg %.1f pips | worst losing streak %d"
-            % (s["trades"], s["win_rate"] * 100, s["avg_r"], pf, s["net"], s["avg_pips"], s["worst_losing_streak"]))
+    return ("  trades %d | win %.0f%% | avg %.2f R (t %.1f) | profit factor %s | net %+.2f | avg %.1f pips | worst losing streak %d"
+            % (s["trades"], s["win_rate"] * 100, s["avg_r"], s["t_stat"], pf, s["net"], s["avg_pips"], s["worst_losing_streak"]))
 
 
 def cmd_run(a):
@@ -366,8 +464,12 @@ def cmd_run(a):
     if a.strategy == "breakout":
         st = RangeBreakout(tf_min, spec, a.range_start, a.range_end, a.trade_end, a.flat_hour, a.rr,
                            a.buffer_pips, a.min_range, a.max_range, a.min_stop, a.adr_ref or None)
-    else:
+    elif a.strategy == "pullback":
         st = TrendPullback(tf_min, spec, rr=a.rr, atr_mult=a.atr_mult)
+    elif a.strategy == "fade":
+        st = BandFade(tf_min, spec)
+    else:
+        st = DonchianTrend(tf_min, spec)
     res = run_backtest(bars, spec, st, a.equity, a.risk, slip, int(a.min_spread_pips * spec["pip"] / spec["point"]),
                        a.commission)
     print("strategy: %s | slippage %.2f pips a fill" % (a.strategy, slip))
@@ -402,7 +504,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run")
     p.add_argument("--bars", required=True)
-    p.add_argument("--strategy", choices=["breakout", "pullback"], default="breakout")
+    p.add_argument("--strategy", choices=["breakout", "pullback", "fade", "donchian"], default="breakout")
     p.add_argument("--resample", type=int, default=0, help="aggregate bars to this many minutes first")
     p.add_argument("--adr-ref", type=float, default=70.0,
                    help="pip settings assume this average daily range and are scaled per symbol; 0 = off")

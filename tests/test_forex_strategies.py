@@ -84,5 +84,77 @@ class ScaledBreakoutTests(unittest.TestCase):
         self.assertTrue(all(s.on_bar(bars, i) is None for i in range(len(bars))))
 
 
+class DstTests(unittest.TestCase):
+    def test_eu_dst_and_server_clock(self):
+        import calendar
+        md = load("forex-data", "mt5_data")
+        jan = calendar.timegm((2026, 1, 15, 12, 0, 0))
+        jul = calendar.timegm((2026, 7, 15, 12, 0, 0))
+        us_only = calendar.timegm((2026, 3, 20, 12, 0, 0))     # US already on summer time, Europe not yet
+        self.assertFalse(md.eu_dst(jan))
+        self.assertTrue(md.eu_dst(jul))
+        self.assertFalse(md.eu_dst(us_only))
+        self.assertEqual(md.server_to_utc(jan + 7200, 7200, True), jan)       # GMT+2 in winter
+        self.assertEqual(md.server_to_utc(jul + 10800, 7200, True), jul)      # GMT+3 in summer
+        self.assertEqual(md.server_to_utc(jul + 7200, 7200, False), jul)      # fixed-offset broker
+
+
+class HourTests(unittest.TestCase):
+    def test_wrapping_window(self):
+        self.assertTrue(bt.in_hours(23 * 3600 + 5, 23, 6))
+        self.assertTrue(bt.in_hours(3 * 3600, 23, 6))
+        self.assertFalse(bt.in_hours(12 * 3600, 23, 6))
+        self.assertTrue(bt.in_hours(8 * 3600, 7, 17))
+
+    def test_next_hour(self):
+        self.assertEqual(bt.next_hour_ts(23 * 3600, 8), 86400 + 8 * 3600)
+        self.assertEqual(bt.next_hour_ts(3 * 3600, 8), 8 * 3600)
+
+
+class FadeTests(unittest.TestCase):
+    def test_signals_point_at_the_mean_and_do_not_peek(self):
+        bars = wave_bars(4000, amp=0.0010, drift=0)
+        s = bt.BandFade(15, SPEC, start_hour=0, end_hour=24, min_rr=0.1)
+        s.prepare(bars)
+        hits = {}
+        for i in range(len(bars)):
+            sig = s.on_bar(bars, i)
+            if sig:
+                hits[i] = sig
+                want = "long" if bars[i]["c"] < s.mid[i] else "short"
+                self.assertEqual(sig["side"], want)
+                self.assertGreater(sig["tp_pips"], 0)
+        self.assertTrue(hits)
+        first = min(hits)
+        cut = [dict(b) for b in bars[:first + 1]] + [dict(b, c=9.9, h=9.9, o=9.9, l=9.9) for b in bars[first + 1:]]
+        s2 = bt.BandFade(15, SPEC, start_hour=0, end_hour=24, min_rr=0.1)
+        s2.prepare(cut)
+        self.assertEqual(s2.on_bar(cut, first), hits[first])
+
+
+class DonchianTests(unittest.TestCase):
+    def test_breaks_out_with_the_move_and_holds(self):
+        bars = wave_bars(3000, step=14400)
+        s = bt.DonchianTrend(240, SPEC)
+        s.prepare(bars)
+        self.assertIsNone(s.flat_ts(0))
+        sides = set()
+        for i in range(len(bars)):
+            sig = s.on_bar(bars, i)
+            if sig:
+                sides.add(sig["side"])
+                prior = bars[i - 20:i]
+                if sig["side"] == "long":
+                    self.assertGreater(bars[i]["c"], max(b["h"] for b in prior))
+                self.assertAlmostEqual(sig["tp_pips"], sig["sl_pips"] * 3.0)
+        self.assertEqual(sides, {"long", "short"})
+
+    def test_engine_runs_multi_day_trades(self):
+        bars = wave_bars(3000, step=14400)
+        r = bt.run_backtest(bars, SPEC, bt.DonchianTrend(240, SPEC), equity=10000)
+        self.assertGreater(len(r["trades"]), 0)
+        self.assertTrue(any(t["t_exit"] - t["t_entry"] > 86400 for t in r["trades"]))
+
+
 if __name__ == "__main__":
     unittest.main()

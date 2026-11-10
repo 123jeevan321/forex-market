@@ -15,6 +15,7 @@ from the newest tick). Bars are dicts: t (UTC unix), o, h, l, c, v, spread (poin
 """
 
 import argparse
+import calendar
 import csv
 import json
 import os
@@ -75,13 +76,33 @@ def symbol_spec(info, tick=None):
     return spec
 
 
-def rates_to_bars(rates, server_offset_s=0):
-    """MT5 rates (numpy structured array, or list of dicts) -> list of bar dicts, oldest first, UTC."""
+def _last_sunday_1utc(year, month):
+    last = calendar.timegm((year, month, 31, 1, 0, 0))
+    return last - ((time.gmtime(last).tm_wday + 1) % 7) * 86400
+
+
+def eu_dst(ts_utc):
+    """Is European summer time in force at this UTC moment? (last Sunday of March 01:00 -> of October 01:00)"""
+    y = time.gmtime(ts_utc).tm_year
+    return _last_sunday_1utc(y, 3) <= ts_utc < _last_sunday_1utc(y, 10)
+
+
+def server_to_utc(ts_server, std_offset_s, dst=False):
+    """Broker clock -> UTC. With dst=True the broker is one hour further ahead during European summer time
+    (XM: GMT+2 in winter, GMT+3 in summer; checked against the weekly open, which is always 5pm New York)."""
+    if dst and eu_dst(ts_server - std_offset_s - 3600):
+        return ts_server - std_offset_s - 3600
+    return ts_server - std_offset_s
+
+
+def rates_to_bars(rates, server_offset_s=0, dst=False):
+    """MT5 rates (numpy structured array, or list of dicts) -> list of bar dicts, oldest first, UTC.
+    server_offset_s is the broker's WINTER offset when dst=True."""
     bars = []
     for r in rates:
         get = (lambda k: r[k]) if isinstance(r, dict) or hasattr(r, "dtype") else (lambda k: getattr(r, k))
         bars.append({
-            "t": int(get("time")) - int(server_offset_s),
+            "t": server_to_utc(int(get("time")), int(server_offset_s), dst),
             "o": float(get("open")), "h": float(get("high")), "l": float(get("low")), "c": float(get("close")),
             "v": int(get("tick_volume")), "spread": int(get("spread")),
         })
@@ -146,16 +167,21 @@ def server_offset(mt5, symbol):
     return int(round(raw / 1800.0) * 1800)
 
 
-def fetch_bars(mt5, symbol, tf, count, offset=None):
+def fetch_bars(mt5, symbol, tf, count, offset=None, dst=True):
     if tf not in TIMEFRAMES:
         raise DataError("timeframe must be one of %s" % ", ".join(TIMEFRAMES))
     if not mt5.symbol_select(symbol, True):
         raise DataError("symbol %s not available at this broker (try `symbols --match`)" % symbol)
-    off = server_offset(mt5, symbol) if offset is None else int(offset * 3600)
+    if offset is None:                      # detect now, then take off the summer hour to get the winter offset
+        off = server_offset(mt5, symbol)
+        if dst and eu_dst(time.time()):
+            off -= 3600
+    else:
+        off = int(offset * 3600)
     rates = mt5.copy_rates_from_pos(symbol, getattr(mt5, "TIMEFRAME_" + tf), 0, count)
     if rates is None or len(rates) == 0:
         raise DataError("no bars for %s %s: %s" % (symbol, tf, mt5.last_error()))
-    bars = rates_to_bars(rates, off)
+    bars = rates_to_bars(rates, off, dst)
     # the last bar is still forming; callers decide entries on closed bars only
     return bars, off
 
@@ -211,13 +237,13 @@ def cmd_bars(a):
             raise DataError("give a symbol, or --csv FILE")
         mt5 = connect()
         try:
-            bars, off = fetch_bars(mt5, a.symbol, a.tf, a.count, a.server_offset)
+            bars, off = fetch_bars(mt5, a.symbol, a.tf, a.count, a.server_offset, not a.no_dst)
             spec = symbol_spec(mt5.symbol_info(a.symbol), mt5.symbol_info_tick(a.symbol))
         finally:
             mt5.shutdown()
         symbol = a.symbol
     problems = check_bars(bars, TIMEFRAMES[a.tf])
-    print("%s %s: %d bars, %s -> %s UTC (server offset %+.1fh)" % (
+    print("%s %s: %d bars, %s -> %s UTC (server winter offset %+.1fh)" % (
         symbol, a.tf, len(bars), time.strftime("%Y-%m-%d %H:%M", time.gmtime(bars[0]["t"])),
         time.strftime("%Y-%m-%d %H:%M", time.gmtime(bars[-1]["t"])), off / 3600.0))
     print("data check: %s" % ("clean" if not problems else "%d problem(s)" % len(problems)))
@@ -241,6 +267,8 @@ def main(argv=None):
     p.add_argument("--count", type=int, default=500)
     p.add_argument("--csv")
     p.add_argument("--server-offset", type=float, default=None, help="broker clock minus UTC, hours")
+    p.add_argument("--no-dst", action="store_true",
+                   help="broker clock does NOT move an hour in European summer (XM's does, so leave this off)")
     p.add_argument("--write", action="store_true")
     p.add_argument("--show", type=int, default=5, help="how many data problems to list")
     p.set_defaults(fn=cmd_bars)
