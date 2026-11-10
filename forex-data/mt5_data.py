@@ -255,6 +255,73 @@ def cmd_bars(a):
         print("wrote %s" % path)
 
 
+def ticks_to_flow(times, bids, asks, prev_mid=None, bucket_s=300, point=1.0):
+    """Order-flow PROXY from quote ticks. Retail forex has no trade tape, so each tick is classed by the
+    tick rule: the mid price moved up (an 'up' tick), down, or not at all. Per time bucket this returns
+    {bucket_start: [up, dn, n_ticks, sum_spread_points]} plus the last mid (to chain the next chunk).
+    'delta' = up - dn. It measures quote pressure, NOT traded volume."""
+    import numpy as np
+    times, bids, asks = np.asarray(times), np.asarray(bids, dtype=float), np.asarray(asks, dtype=float)
+    out = {}
+    if len(times) == 0:
+        return out, prev_mid
+    mid = (bids + asks) / 2.0
+    first = mid[0] if prev_mid is None else prev_mid
+    d = np.diff(np.concatenate(([first], mid)))
+    bucket = (times // bucket_s) * bucket_s
+    keys, inv = np.unique(bucket, return_inverse=True)
+    up = np.bincount(inv, weights=(d > 0), minlength=len(keys))
+    dn = np.bincount(inv, weights=(d < 0), minlength=len(keys))
+    n = np.bincount(inv, minlength=len(keys))
+    sp = np.bincount(inv, weights=(asks - bids) / point, minlength=len(keys))
+    for i, k in enumerate(keys):
+        out[int(k)] = [int(up[i]), int(dn[i]), int(n[i]), float(sp[i])]
+    return out, float(mid[-1])
+
+
+def cmd_flow(a):
+    """Download raw ticks in small chunks and keep only the per-bucket up/down counts (ticks are huge)."""
+    mt5 = connect()
+    try:
+        if not mt5.symbol_select(a.symbol, True):
+            raise DataError("symbol %s not available" % a.symbol)
+        point = mt5.symbol_info(a.symbol).point
+        off = server_offset(mt5, a.symbol)
+        if eu_dst(time.time()):
+            off -= 3600
+        step = TIMEFRAMES[a.tf] * 60
+        end = int(time.time()) + off + 7200                 # server clock, with slack
+        start = end - a.days * 86400
+        flow, prev, got = {}, None, 0
+        t0 = start
+        while t0 < end:
+            t1 = min(t0 + a.chunk_days * 86400, end)
+            ticks = mt5.copy_ticks_range(a.symbol, t0, t1, mt5.COPY_TICKS_INFO)
+            if ticks is not None and len(ticks):
+                part, prev = ticks_to_flow(ticks["time"], ticks["bid"], ticks["ask"], prev, step, point)
+                for k, v in part.items():
+                    u = server_to_utc(k, off, True)
+                    if u in flow:
+                        flow[u] = [x + y for x, y in zip(flow[u], v)]
+                    else:
+                        flow[u] = v
+                got += len(ticks)
+            print("  %s .. %s  ticks so far %d" % (time.strftime("%Y-%m-%d", time.gmtime(t0)),
+                                                  time.strftime("%Y-%m-%d", time.gmtime(t1)), got), flush=True)
+            t0 = t1
+    finally:
+        mt5.shutdown()
+    if not flow:
+        raise DataError("no ticks for %s" % a.symbol)
+    rows = [{"t": k, "up": v[0], "dn": v[1], "n": v[2], "sp": round(v[3] / v[2], 2) if v[2] else 0.0}
+            for k, v in sorted(flow.items())]
+    path = os.path.join("trader", "flow", "%s_%s.json" % (a.symbol, a.tf))
+    write_json(path, {"symbol": a.symbol, "tf": a.tf, "ticks": got, "flow": rows})
+    print("%s: %d ticks -> %d buckets, %s -> %s UTC\nwrote %s" % (
+        a.symbol, got, len(rows), time.strftime("%Y-%m-%d", time.gmtime(rows[0]["t"])),
+        time.strftime("%Y-%m-%d", time.gmtime(rows[-1]["t"])), path))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Read-only MT5 data layer.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -272,6 +339,12 @@ def main(argv=None):
     p.add_argument("--write", action="store_true")
     p.add_argument("--show", type=int, default=5, help="how many data problems to list")
     p.set_defaults(fn=cmd_bars)
+    p = sub.add_parser("flow", help="tick-rule order-flow proxy per bar, from raw ticks (slow)")
+    p.add_argument("symbol")
+    p.add_argument("--tf", default="M5", choices=list(TIMEFRAMES))
+    p.add_argument("--days", type=int, default=365)
+    p.add_argument("--chunk-days", type=int, default=2)
+    p.set_defaults(fn=cmd_flow)
     a = ap.parse_args(argv)
     try:
         a.fn(a)
