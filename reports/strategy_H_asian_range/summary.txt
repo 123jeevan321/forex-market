@@ -1,0 +1,35 @@
+H Asian range reversion | data 2025-07-07 -> 2026-11-10 | $10,000, 0.5% risk, max 2 open, 1% daily loss stop | split 60/20/20 chronological
+BASELINE (rules fixed in advance, not tuned). cells: trades, win%, expectancy, return%
+group            ALL                        TRAIN                      VALIDATION                 OUT-OF-SAMPLE             
+EURUSD            60  32% -0.29R   -8.5%     32  34% -0.20R   -3.3%     15  20% -0.59R   -4.4%     13  38% -0.17R   -1.1%   
+GBPUSD            63  27% -0.30R   -9.2%     35  31% -0.12R   -2.1%     14  21% -0.56R   -3.8%     14  21% -0.52R   -3.6%   
+USDJPY            46  28% -0.28R   -6.3%     32  28% -0.34R   -5.3%      5  20% -0.56R   -1.4%      9  33% +0.08R   +0.4%   
+AUDUSD            60  15% -0.62R  -17.1%     27  19% -0.53R   -6.9%     17   6% -0.85R   -7.0%     16  19% -0.54R   -4.3%   
+USDCAD            61  18% -0.58R  -16.2%     34  18% -0.60R   -9.8%     14   0% -1.00R   -6.8%     13  38% -0.05R   -0.3%   
+GOLD.i#           65  26% -0.27R   -8.4%     31  35% +0.01R   +0.0%     18  28% -0.22R   -2.0%     16   6% -0.84R   -6.6%   
+FX5 portfolio    286  24% -0.42R  -45.8%    160  26% -0.35R  -24.7%     63  13% -0.73R  -20.6%     63  29% -0.31R   -9.3%   
+ALL6 portfolio   346  24% -0.40R  -50.1%    189  28% -0.30R  -24.7%     80  16% -0.61R  -21.8%     77  23% -0.43R  -15.3%   
+FX5 detail: n  286 | win  24% [19-29] | exp -0.42 R | PF 0.45 | ret  -45.8% | maxDD  49.4% | sharpe -5.20
+  long -0.30 R (86) | short -0.48 R (200) | sessions (R, n) {'asian': (None, 0), 'london': (-0.43, 285), 'ny': (1.04, 1)} | avg win +1.41 R | avg loss -1.00 R | max consecutive losses 13 | avg hold 50 min | 4.1 trades/week
+
+COST SCENARIOS (same baseline signals). funding_assumed = 0.2-0.3 pip spread + $5/lot; the $5 commission is from the FundingPips help-centre text as reported by search, the spreads are NOT official.
+  xm               FX5 portfolio      ALL n  286 | win  24% [19-29] | exp -0.42 R | PF 0.45 | ret  -45.8% | maxDD  49.4% | sharpe -5.20 | OOS  63  29% -0.31R   -9.3%
+  xm               GOLD.i# (separate) ALL n   65 | win  26% [17-38] | exp -0.27 R | PF 0.65 | ret   -8.4% | maxDD  11.1% | sharpe -1.29 | OOS  16   6% -0.84R   -6.6%
+  funding_assumed  FX5 portfolio      ALL n  335 | win  35% [30-40] | exp -0.22 R | PF 0.70 | ret  -31.9% | maxDD  38.7% | sharpe -2.46 | OOS  69  36% -0.15R   -5.0%
+  funding_assumed  GOLD.i# (separate) ALL n   65 | win  26% [17-38] | exp -0.27 R | PF 0.64 | ret   -8.6% | maxDD  11.2% | sharpe -1.32 | OOS  16   6% -0.85R   -6.6%
+  zero_cost        FX5 portfolio      ALL n  359 | win  37% [32-42] | exp +0.01 R | PF 1.01 | ret   +0.9% | maxDD  18.2% | sharpe +0.11 | OOS  74  38% +0.07R   +2.5%
+  zero_cost        GOLD.i# (separate) ALL n   65 | win  26% [17-38] | exp -0.17 R | PF 0.78 | ret   -5.5% | maxDD  10.3% | sharpe -0.71 | OOS  16   6% -0.83R   -6.5%
+
+WALK-FORWARD (rules never refitted, FX5 pooled, 2-month windows, XM costs): Jul25 n34 -0.12R | Sep25 n36 -0.46R | Nov25 n30 -0.65R | Jan26 n38 -0.25R | Mar26 n25 -0.39R | May26 n44 -0.66R | Jul26 n34 -0.77R | Aug26 n47 -0.26R
+  windows with 5+ trades and positive expectancy: 0 of 8
+
+PARAMETER SENSITIVITY (one factor at a time, FX5 pooled; choice uses train+validation ONLY, out-of-sample shown for honesty)
+setting                    train+val (n, win, exp R, PF)      out-of-sample (n, win, exp R) 
+session=london             n  225 win  22% -0.46 R PF 0.40    n   65 win  29% -0.28 R
+session=ny                 n  159 win  26% -0.35 R PF 0.52    n   35 win  23% -0.52 R
+target=mid                 n  225 win  22% -0.46 R PF 0.40    n   65 win  29% -0.28 R
+target=opp                 n  407 win  23% -0.30 R PF 0.61    n   94 win  20% -0.27 R
+>> TUNED on train+validation: {'session': 'ny', 'target': 'opp'}
+   train+val n 311 exp -0.37 R | OUT-OF-SAMPLE n 77 win 21% exp -0.48 R PF 0.37 return -17.5%
+
+LIMITS: tick-volume VWAP is broker-specific; candle data hides intrabar order (stop assumed first when both are touched); swap not modelled (all trades flat by 20:00 UTC); no news filter; 16 months of 5-minute data only (not 2 years).

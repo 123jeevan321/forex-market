@@ -1,0 +1,20 @@
+UNIFIED COMPARISON: FX5 portfolio (EURUSD GBPUSD USDJPY AUDUSD USDCAD), XM costs, fixed baseline rules
+strategy                    trades   win %     PF    exp R  maxDD %  return % OOS ret %    OOS n OOS exp R
+A sweep+MSS+FVG                435     35%   0.80    -0.11     25.8     -21.8      -6.6       81     -0.17
+B trend continuation           696     21%   0.47    -0.42     77.2     -76.8     -27.3      157     -0.40
+C session breakout+retest      456     21%   0.48    -0.39     59.8     -59.5     -11.2       79     -0.30
+D VWAP mean reversion         1062     24%   0.44    -0.43     89.9     -89.8     -39.9      191     -0.53
+E volatility squeeze           380     26%   0.61    -0.27     41.2     -40.3      -7.2       76     -0.19
+F failed breakout              901     28%   0.54    -0.32     76.9     -76.9     -31.6      189     -0.40
+G HTF pullback                  27     26%   0.62    -0.26      4.0      -3.5      -1.7        6     -0.59
+H Asian range reversion        286     24%   0.45    -0.42     49.4     -45.8      -9.3       63     -0.31
+
+RANKING by out-of-sample expectancy (needs 20+ OOS trades), then drawdown. Not ranked by win rate.
+1. A sweep+MSS+FVG            OOS exp -0.17 R (n 81) | full-period exp -0.11 R | win 35% | PF 0.80 | maxDD 25.8%
+2. E volatility squeeze       OOS exp -0.19 R (n 76) | full-period exp -0.27 R | win 26% | PF 0.61 | maxDD 41.2%
+3. C session breakout+retest  OOS exp -0.30 R (n 79) | full-period exp -0.39 R | win 21% | PF 0.48 | maxDD 59.8%
+4. H Asian range reversion    OOS exp -0.31 R (n 63) | full-period exp -0.42 R | win 24% | PF 0.45 | maxDD 49.4%
+5. F failed breakout          OOS exp -0.40 R (n 189) | full-period exp -0.32 R | win 28% | PF 0.54 | maxDD 76.9%
+6. B trend continuation       OOS exp -0.40 R (n 157) | full-period exp -0.42 R | win 21% | PF 0.47 | maxDD 77.2%
+7. D VWAP mean reversion      OOS exp -0.53 R (n 191) | full-period exp -0.43 R | win 24% | PF 0.44 | maxDD 89.9%
+8. G HTF pullback             OOS exp -0.59 R (n 6) | full-period exp -0.26 R | win 26% | PF 0.62 | maxDD 4.0%

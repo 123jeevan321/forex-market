@@ -1,0 +1,45 @@
+D VWAP mean reversion | data 2025-07-07 -> 2026-11-10 | $10,000, 0.5% risk, max 2 open, 1% daily loss stop | split 60/20/20 chronological
+BASELINE (rules fixed in advance, not tuned). cells: trades, win%, expectancy, return%
+group            ALL                        TRAIN                      VALIDATION                 OUT-OF-SAMPLE             
+EURUSD           335  25% -0.42R  -50.4%    212  25% -0.40R  -34.9%     67  27% -0.40R  -12.6%     56  21% -0.49R  -12.8%   
+GBPUSD           387  29% -0.28R  -42.5%    235  31% -0.24R  -24.9%     73  36% -0.16R   -5.7%     79  20% -0.53R  -18.9%   
+USDJPY           305  25% -0.38R  -44.0%    184  28% -0.32R  -25.5%     65  22% -0.49R  -14.8%     56  20% -0.45R  -11.9%   
+AUDUSD           313  22% -0.49R  -53.8%    205  23% -0.50R  -40.1%     48  27% -0.34R   -8.0%     60  17% -0.58R  -16.2%   
+USDCAD           292  21% -0.51R  -52.8%    185  22% -0.51R  -37.9%     66  18% -0.55R  -16.7%     41  24% -0.44R   -8.7%   
+GOLD.i#          286  29% -0.32R  -37.0%    170  31% -0.29R  -22.0%     53  23% -0.47R  -11.7%     63  30% -0.28R   -8.5%   
+FX5 portfolio    1062  24% -0.43R  -89.8%   660  26% -0.39R  -73.0%    211  24% -0.44R  -37.3%    191  20% -0.53R  -39.9%   
+ALL6 portfolio   1185  25% -0.42R  -91.9%   725  26% -0.39R  -76.2%    238  24% -0.44R  -41.3%    222  21% -0.48R  -41.8%   
+FX5 detail: n 1062 | win  24% [22-27] | exp -0.43 R | PF 0.44 | ret  -89.8% | maxDD  89.9% | sharpe -10.56
+  long -0.22 R (376) | short -0.54 R (686) | sessions (R, n) {'asian': (-0.63, 187), 'london': (-0.47, 507), 'ny': (-0.26, 368)} | avg win +1.29 R | avg loss -0.98 R | max consecutive losses 22 | avg hold 49 min | 15.2 trades/week
+
+COST SCENARIOS (same baseline signals). funding_assumed = 0.2-0.3 pip spread + $5/lot; the $5 commission is from the FundingPips help-centre text as reported by search, the spreads are NOT official.
+  xm               FX5 portfolio      ALL n 1062 | win  24% [22-27] | exp -0.43 R | PF 0.44 | ret  -89.8% | maxDD  89.9% | sharpe -10.56 | OOS 191  20% -0.53R  -39.9%
+  xm               GOLD.i# (separate) ALL n  286 | win  29% [24-35] | exp -0.32 R | PF 0.53 | ret  -37.0% | maxDD  38.0% | sharpe -3.42 | OOS  63  30% -0.28R   -8.5%
+  funding_assumed  FX5 portfolio      ALL n 1138 | win  36% [33-38] | exp -0.21 R | PF 0.73 | ret  -70.2% | maxDD  70.6% | sharpe -4.46 | OOS 193  27% -0.43R  -34.5%
+  funding_assumed  GOLD.i# (separate) ALL n  250 | win  32% [26-38] | exp -0.27 R | PF 0.59 | ret  -29.2% | maxDD  30.3% | sharpe -2.92 | OOS  52  29% -0.28R   -7.1%
+  zero_cost        FX5 portfolio      ALL n 1432 | win  38% [36-41] | exp +0.04 R | PF 1.05 | ret  +27.0% | maxDD  22.9% | sharpe +0.76 | OOS 260  31% -0.15R  -18.1%
+  zero_cost        GOLD.i# (separate) ALL n  292 | win  33% [27-38] | exp -0.18 R | PF 0.73 | ret  -23.2% | maxDD  27.8% | sharpe -1.77 | OOS  63  30% -0.21R   -6.5%
+
+WALK-FORWARD (rules never refitted, FX5 pooled, 2-month windows, XM costs): Jul25 n190 -0.40R | Sep25 n207 -0.40R | Nov25 n262 -0.30R | Jan26 n224 -0.35R | Mar26 n256 -0.54R | May26 n254 -0.47R | Jul26 n205 -0.48R | Aug26 n194 -0.47R
+  windows with 5+ trades and positive expectancy: 0 of 8
+
+PARAMETER SENSITIVITY (one factor at a time, FX5 pooled; choice uses train+validation ONLY, out-of-sample shown for honesty)
+setting                    train+val (n, win, exp R, PF)      out-of-sample (n, win, exp R) 
+sd=1.5                     n 1432 win  24% -0.47 R PF 0.36    n  321 win  20% -0.53 R
+sd=2.0                     n 1489 win  25% -0.40 R PF 0.45    n  337 win  20% -0.51 R
+sd=2.5                     n 1005 win  26% -0.32 R PF 0.55    n  178 win  22% -0.43 R
+adx_max=18.0               n 1105 win  26% -0.39 R PF 0.45    n  252 win  22% -0.49 R
+adx_max=20.0               n 1489 win  25% -0.40 R PF 0.45    n  337 win  20% -0.51 R
+adx_max=25.0               n 2343 win  25% -0.39 R PF 0.45    n  547 win  21% -0.51 R
+tp_mode=vwap               n 1489 win  25% -0.40 R PF 0.45    n  337 win  20% -0.51 R
+tp_mode=rr1.5              n 2168 win  28% -0.36 R PF 0.49    n  485 win  23% -0.45 R
+tp_mode=rr2                n 2088 win  24% -0.38 R PF 0.49    n  469 win  21% -0.44 R
+tp_mode=partial            n 1487 win  25% -0.39 R PF 0.41    n  337 win  20% -0.49 R
+slope_filter=False         n 1489 win  25% -0.40 R PF 0.45    n  337 win  20% -0.51 R
+slope_filter=True          n 1426 win  26% -0.39 R PF 0.46    n  316 win  20% -0.52 R
+atr_expansion=False        n 1489 win  25% -0.40 R PF 0.45    n  337 win  20% -0.51 R
+atr_expansion=True         n 1037 win  24% -0.44 R PF 0.40    n  240 win  16% -0.60 R
+>> TUNED on train+validation: {'sd': 2.5, 'adx_max': 18.0, 'tp_mode': 'rr1.5', 'slope_filter': True, 'atr_expansion': False}
+   train+val n 1064 exp -0.36 R | OUT-OF-SAMPLE n 193 win 25% exp -0.41 R PF 0.44 return -28.4%
+
+LIMITS: tick-volume VWAP is broker-specific; candle data hides intrabar order (stop assumed first when both are touched); swap not modelled (all trades flat by 20:00 UTC); no news filter; 16 months of 5-minute data only (not 2 years).

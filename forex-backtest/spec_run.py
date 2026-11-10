@@ -64,7 +64,7 @@ def slip_scale(bars, spec):
     return adr[len(adr) // 2] / (70 * spec["pip"]) if adr else 1.0
 
 
-def run(sym, kind, cfg, bars, spec, strat=None, rr=None, fp=False, **kw):
+def run(sym, kind, cfg, bars, spec, strat=None, rr=None, fp=False, zero=False, **kw):
     """One backtest. Returns trades tagged with everything the CSV needs."""
     pip = spec["pip"]
     if strat is None:
@@ -77,7 +77,10 @@ def run(sym, kind, cfg, bars, spec, strat=None, rr=None, fp=False, **kw):
         pts = FP_SPREAD_PIPS[sym] * spec["pip"] / spec["point"]
         b2 = [dict(b, spread=pts) for b in bars]
         sp2, com = dict(spec, spread_points=pts), 5.0
-    res = bt.run_backtest(b2, sp2, Frozen(strat), START, RISK, 0.3 * slip_scale(bars, spec), 0, com)
+    slip = 0.3 * slip_scale(bars, spec)
+    if zero:                                                # diagnostic only: no spread, slippage or commission
+        b2, sp2, com, slip = [dict(b, spread=0) for b in bars], dict(spec, spread_points=0), 0.0, 0.0
+    res = bt.run_backtest(b2, sp2, Frozen(strat), START, RISK, slip, 0, com)
     idx = {b["t"]: i for i, b in enumerate(bars)}
     out = []
     for t in res["trades"]:

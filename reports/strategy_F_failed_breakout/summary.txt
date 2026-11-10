@@ -1,0 +1,38 @@
+F failed breakout | data 2025-07-07 -> 2026-11-10 | $10,000, 0.5% risk, max 2 open, 1% daily loss stop | split 60/20/20 chronological
+BASELINE (rules fixed in advance, not tuned). cells: trades, win%, expectancy, return%
+group            ALL                        TRAIN                      VALIDATION                 OUT-OF-SAMPLE             
+EURUSD           213  30% -0.27R  -25.4%    121  31% -0.28R  -15.6%     53  34% -0.17R   -4.5%     39  23% -0.39R   -7.4%   
+GBPUSD           202  28% -0.35R  -29.8%    113  29% -0.30R  -15.9%     47  23% -0.51R  -11.4%     42  29% -0.28R   -5.8%   
+USDJPY           201  34% -0.21R  -19.3%    107  40% -0.01R   -0.8%     43  26% -0.49R  -10.0%     51  29% -0.39R   -9.6%   
+AUDUSD           203  22% -0.47R  -38.3%    125  25% -0.40R  -22.4%     36  17% -0.59R  -10.1%     42  17% -0.57R  -11.4%   
+USDCAD           192  30% -0.29R  -24.7%    110  35% -0.17R   -9.3%     39  23% -0.46R   -8.5%     43  23% -0.45R   -9.3%   
+GOLD.i#          207  42% -0.01R   -1.6%    121  41% -0.01R   -1.1%     41  39% -0.02R   -0.4%     45  44% -0.00R   -0.1%   
+FX5 portfolio    901  28% -0.32R  -76.9%    519  32% -0.23R  -45.7%    193  23% -0.49R  -37.6%    189  24% -0.40R  -31.6%   
+ALL6 portfolio   1049  31% -0.26R  -75.2%   613  34% -0.19R  -44.0%    219  25% -0.41R  -36.4%    217  27% -0.33R  -30.2%   
+FX5 detail: n  901 | win  28% [26-31] | exp -0.32 R | PF 0.54 | ret  -76.9% | maxDD  76.9% | sharpe -7.19
+  long -0.22 R (367) | short -0.39 R (534) | sessions (R, n) {'asian': (-0.14, 42), 'london': (-0.41, 394), 'ny': (-0.26, 465)} | avg win +1.24 R | avg loss -0.94 R | max consecutive losses 20 | avg hold 93 min | 12.9 trades/week
+
+COST SCENARIOS (same baseline signals). funding_assumed = 0.2-0.3 pip spread + $5/lot; the $5 commission is from the FundingPips help-centre text as reported by search, the spreads are NOT official.
+  xm               FX5 portfolio      ALL n  901 | win  28% [26-31] | exp -0.32 R | PF 0.54 | ret  -76.9% | maxDD  76.9% | sharpe -7.19 | OOS 189  24% -0.40R  -31.6%
+  xm               GOLD.i# (separate) ALL n  207 | win  42% [35-48] | exp -0.01 R | PF 0.97 | ret   -1.6% | maxDD   6.6% | sharpe -0.09 | OOS  45  44% -0.00R   -0.1%
+  funding_assumed  FX5 portfolio      ALL n  887 | win  36% [33-39] | exp -0.18 R | PF 0.75 | ret  -55.1% | maxDD  56.6% | sharpe -3.46 | OOS 174  30% -0.30R  -23.5%
+  funding_assumed  GOLD.i# (separate) ALL n  206 | win  42% [35-49] | exp -0.01 R | PF 0.97 | ret   -1.6% | maxDD   6.7% | sharpe -0.08 | OOS  44  45% +0.02R   +0.4%
+  zero_cost        FX5 portfolio      ALL n 1002 | win  38% [35-41] | exp -0.00 R | PF 0.99 | ret   -2.6% | maxDD  34.8% | sharpe -0.01 | OOS 208  34% -0.10R  -10.6%
+  zero_cost        GOLD.i# (separate) ALL n  209 | win  44% [37-50] | exp +0.08 R | PF 1.13 | ret   +7.8% | maxDD   6.1% | sharpe +0.60 | OOS  46  46% +0.07R   +1.6%
+
+WALK-FORWARD (rules never refitted, FX5 pooled, 2-month windows, XM costs): Jul25 n123 -0.41R | Sep25 n124 -0.10R | Nov25 n106 -0.31R | Jan26 n115 -0.18R | Mar26 n121 -0.21R | May26 n130 -0.39R | Jul26 n137 -0.59R | Aug26 n137 -0.32R
+  windows with 5+ trades and positive expectancy: 0 of 8
+
+PARAMETER SENSITIVITY (one factor at a time, FX5 pooled; choice uses train+validation ONLY, out-of-sample shown for honesty)
+setting                    train+val (n, win, exp R, PF)      out-of-sample (n, win, exp R) 
+target=mid                 n  794 win  30% -0.29 R PF 0.55    n  217 win  24% -0.42 R
+target=opp                 n 1248 win  30% -0.22 R PF 0.66    n  314 win  27% -0.34 R
+target=vwap                n  661 win  31% -0.27 R PF 0.57    n  188 win  27% -0.38 R
+levels=('pd',)             n  243 win  24% -0.37 R PF 0.46    n   68 win  24% -0.41 R
+levels=('asian',)          n  333 win  31% -0.30 R PF 0.55    n   97 win  26% -0.45 R
+levels=('london',)         n  273 win  36% -0.20 R PF 0.65    n   68 win  22% -0.40 R
+levels=('pd', 'asian', 'london') n  794 win  30% -0.29 R PF 0.55    n  217 win  24% -0.42 R
+>> TUNED on train+validation: {'target': 'opp', 'levels': ('london',)}
+   train+val n 460 exp -0.17 R | OUT-OF-SAMPLE n 116 win 31% exp -0.32 R PF 0.45 return -14.8%
+
+LIMITS: tick-volume VWAP is broker-specific; candle data hides intrabar order (stop assumed first when both are touched); swap not modelled (all trades flat by 20:00 UTC); no news filter; 16 months of 5-minute data only (not 2 years).

@@ -617,7 +617,15 @@ def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3
             if d <= 0 or d < sig.get("min_sl_pips", 0.0) or (sig.get("max_sl_pips") and d > sig["max_sl_pips"]):
                 i += 1
                 continue
-            sig = dict(sig, sl_pips=d, tp_pips=d * sig["rr"])
+            if "tp_price" in sig:
+                # target is a PRICE level (VWAP, range midpoint, opposite boundary). Rejected if it gives too little reward.
+                tp_d = ((sig["tp_price"] - fill) if lg else (fill - sig["tp_price"])) / spec["pip"]
+                if tp_d <= 0 or tp_d < sig.get("min_rr", 0.0) * d:
+                    i += 1
+                    continue
+                sig = dict(sig, sl_pips=d, tp_pips=tp_d)
+            else:
+                sig = dict(sig, sl_pips=d, tp_pips=d * sig["rr"])
         stop_cost = sig["sl_pips"] + slip_pips          # size for the stop plus slippage
         lots = size_lots(eq, risk_pct, stop_cost, spec)
         if lots <= 0:
@@ -626,6 +634,12 @@ def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3
             continue
         t = simulate_trade(bars, i + 1, sig["side"], sig["sl_pips"], sig["tp_pips"], spec, slip_pips,
                            strategy.flat_ts(bars[i + 1]["t"]), floor_spread_points)
+        if sig.get("partial_rr"):
+            # half the position exits at partial_rr x risk, half runs to the target; the stop is NOT moved to breakeven
+            t1 = simulate_trade(bars, i + 1, sig["side"], sig["sl_pips"], sig["partial_rr"] * sig["sl_pips"], spec,
+                                slip_pips, strategy.flat_ts(bars[i + 1]["t"]), floor_spread_points)
+            t = dict(t, pips=0.5 * (t["pips"] + t1["pips"]), exit_index=max(t["exit_index"], t1["exit_index"]),
+                     reason=t1["reason"] + "+" + t["reason"])
         risk_money = lots * stop_cost * pv
         pnl = t["pips"] * pv * lots - commission_per_lot * lots
         eq += pnl
