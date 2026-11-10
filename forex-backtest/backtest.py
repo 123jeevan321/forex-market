@@ -356,6 +356,178 @@ class DonchianTrend:
         return {"side": side, "sl_pips": stop, "tp_pips": stop * self.p["rr"]}
 
 
+# ------------------------------------------------------------------ SMC / ICT / volume profile (scalping)
+
+KILL_ZONES = ((7, 10), (12, 15))        # UTC: London open, New York open
+
+
+def volume_profile(bars, bins=48, value_area=0.70):
+    """Tick-volume profile of a set of bars -> (poc, vah, val) prices, or None.
+    NOTE: retail forex has no real traded volume. This uses TICK volume (how often the price changed), a rough
+    stand-in. Each bar's volume is spread evenly over the price bins its range covers."""
+    lo, hi = min(b["l"] for b in bars), max(b["h"] for b in bars)
+    if hi <= lo:
+        return None
+    w = (hi - lo) / bins
+    hist = [0.0] * bins
+    for b in bars:
+        i0 = min(bins - 1, int((b["l"] - lo) / w))
+        i1 = min(bins - 1, int((b["h"] - lo) / w))
+        share = (b["v"] or 1) / float(i1 - i0 + 1)
+        for j in range(i0, i1 + 1):
+            hist[j] += share
+    poc = max(range(bins), key=lambda j: hist[j])
+    a = z = poc
+    got, total = hist[poc], sum(hist)
+    while got < value_area * total:
+        up = hist[z + 1] if z + 1 < bins else -1.0
+        dn = hist[a - 1] if a > 0 else -1.0
+        if up < 0 and dn < 0:
+            break
+        if up >= dn:
+            z += 1
+            got += up
+        else:
+            a -= 1
+            got += dn
+    return lo + (poc + 0.5) * w, lo + (z + 1) * w, lo + a * w
+
+
+class DayContext:
+    """What a trader knows at the start of a day, built only from EARLIER days: the previous full day's
+    high/low and volume profile, and the average daily range. Plus today's Asian range (00-07 UTC), which is
+    only read after 07:00."""
+
+    def __init__(self, bars, tf_s, asian=(0, 7)):
+        groups = {}
+        for b in bars:
+            groups.setdefault(b["t"] // DAY, []).append(b)
+        self.adr = daily_adr(bars)
+        self.prev, self.asian = {}, {}
+        full = DAY // tf_s
+        last_full = None
+        for d in sorted(groups):
+            if last_full is not None:
+                self.prev[d] = last_full
+            g = groups[d]
+            a = [b for b in g if asian[0] * 3600 <= b["t"] % DAY < asian[1] * 3600]
+            if len(a) >= 0.8 * (asian[1] - asian[0]) * 3600 // tf_s:
+                self.asian[d] = (max(b["h"] for b in a), min(b["l"] for b in a))
+            if len(g) >= 0.5 * full:                      # skip the short Sunday stub as a "previous day"
+                vp = volume_profile(g)
+                last_full = {"high": max(b["h"] for b in g), "low": min(b["l"] for b in g),
+                             "poc": vp[0] if vp else None, "vah": vp[1] if vp else None,
+                             "val": vp[2] if vp else None}
+
+
+def in_kill_zone(sec, zones=KILL_ZONES):
+    return any(s * 3600 <= sec < e * 3600 for s, e in zones)
+
+
+class LiquiditySweep:
+    """SMC / ICT stop-hunt reversal, scalped. Liquidity rests beyond obvious levels: the previous day's high
+    and low and the Asian-session high and low. In the London / New York kill zones, when a bar spikes THROUGH
+    a level and closes back on the other side against its own open (sweep + rejection), trade the reversal.
+    Stop just beyond the spike. Target rr x the stop. Out after max_hold_min regardless.
+    vp_filter=True adds volume profile: only fade sweeps ABOVE yesterday's value area high (or BELOW its low),
+    i.e. price stretched outside where most trading happened."""
+
+    def __init__(self, tf_min, spec, rr=1.5, max_hold_min=45, buffer_pips=0.5, min_stop_pips=3, max_stop_pips=15,
+                 adr_ref_pips=70, vp_filter=False, max_per_day=2):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(rr=rr, max_hold=max_hold_min * 60, buffer_pips=buffer_pips, min_stop_pips=min_stop_pips,
+                      max_stop_pips=max_stop_pips, adr_ref=adr_ref_pips, vp_filter=vp_filter,
+                      max_per_day=max_per_day)
+        self.used, self.count = set(), {}
+
+    def prepare(self, bars):
+        self.ctx = DayContext(bars, self.tf)
+
+    def flat_ts(self, t):
+        return t + self.p["max_hold"]
+
+    def on_bar(self, bars, i):
+        p, b = self.p, bars[i]
+        day, sec = divmod(b["t"] + self.tf, DAY)
+        prev = self.ctx.prev.get(day)
+        if not in_kill_zone(sec) or not prev or day not in self.ctx.adr:
+            return None
+        if self.count.get(day, 0) >= p["max_per_day"]:
+            return None
+        k = self.ctx.adr[day] / (p["adr_ref"] * self.pip)
+        buf = p["buffer_pips"] * k * self.pip
+        levels = [("pdh", prev["high"], 1), ("pdl", prev["low"], -1)]
+        if day in self.ctx.asian:
+            levels += [("ash", self.ctx.asian[day][0], 1), ("asl", self.ctx.asian[day][1], -1)]
+        for name, lvl, kind in levels:
+            if (day, name) in self.used:
+                continue
+            if kind > 0 and b["h"] > lvl + buf and b["c"] < lvl and b["c"] < b["o"]:
+                if p["vp_filter"] and not (prev["vah"] and lvl >= prev["vah"]):
+                    continue
+                side, stop = "short", (b["h"] + buf - b["c"]) / self.pip
+            elif kind < 0 and b["l"] < lvl - buf and b["c"] > lvl and b["c"] > b["o"]:
+                if p["vp_filter"] and not (prev["val"] and lvl <= prev["val"]):
+                    continue
+                side, stop = "long", (b["c"] - (b["l"] - buf)) / self.pip
+            else:
+                continue
+            self.used.add((day, name))                     # a swept level is spent for the day
+            if not (p["min_stop_pips"] * k <= stop <= p["max_stop_pips"] * k):
+                continue
+            self.count[day] = self.count.get(day, 0) + 1
+            return {"side": side, "sl_pips": stop, "tp_pips": stop * p["rr"]}
+        return None
+
+
+class ValueReturn:
+    """Volume-profile scalp. When price has been trading OUTSIDE yesterday's value area and a bar closes back
+    INSIDE it (a failed auction), trade toward yesterday's point of control (the busiest price). Stop beyond the
+    recent extreme. Kill zones only, out after max_hold_min."""
+
+    def __init__(self, tf_min, spec, max_hold_min=45, lookback=6, min_rr=1.0, buffer_pips=0.5, min_stop_pips=3,
+                 max_stop_pips=15, adr_ref_pips=70):
+        self.tf = tf_min * 60
+        self.pip = spec["pip"]
+        self.p = dict(max_hold=max_hold_min * 60, lookback=lookback, min_rr=min_rr, buffer_pips=buffer_pips,
+                      min_stop_pips=min_stop_pips, max_stop_pips=max_stop_pips, adr_ref=adr_ref_pips)
+        self.used = set()
+
+    def prepare(self, bars):
+        self.ctx = DayContext(bars, self.tf)
+
+    def flat_ts(self, t):
+        return t + self.p["max_hold"]
+
+    def on_bar(self, bars, i):
+        p, b = self.p, bars[i]
+        if i < p["lookback"]:
+            return None
+        day, sec = divmod(b["t"] + self.tf, DAY)
+        prev = self.ctx.prev.get(day)
+        if not in_kill_zone(sec) or not prev or not prev["poc"] or day not in self.ctx.adr:
+            return None
+        k = self.ctx.adr[day] / (p["adr_ref"] * self.pip)
+        buf = p["buffer_pips"] * k * self.pip
+        c, c1 = b["c"], bars[i - 1]["c"]
+        recent = bars[i - p["lookback"] + 1:i + 1]
+        if c1 > prev["vah"] and prev["poc"] < c < prev["vah"] and (day, "s") not in self.used:
+            side, key = "short", (day, "s")
+            stop = (max(x["h"] for x in recent) + buf - c) / self.pip
+            tp = (c - prev["poc"]) / self.pip
+        elif c1 < prev["val"] and prev["val"] < c < prev["poc"] and (day, "l") not in self.used:
+            side, key = "long", (day, "l")
+            stop = (c - (min(x["l"] for x in recent) - buf)) / self.pip
+            tp = (prev["poc"] - c) / self.pip
+        else:
+            return None
+        self.used.add(key)
+        if not (p["min_stop_pips"] * k <= stop <= p["max_stop_pips"] * k) or tp < p["min_rr"] * stop:
+            return None
+        return {"side": side, "sl_pips": stop, "tp_pips": tp}
+
+
 # ------------------------------------------------------------------ engine
 
 def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3, floor_spread_points=0,
@@ -468,6 +640,11 @@ def cmd_run(a):
         st = TrendPullback(tf_min, spec, rr=a.rr, atr_mult=a.atr_mult)
     elif a.strategy == "fade":
         st = BandFade(tf_min, spec)
+    elif a.strategy in ("sweep", "sweep-vp"):
+        st = LiquiditySweep(tf_min, spec, rr=a.rr, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70,
+                            vp_filter=a.strategy == "sweep-vp")
+    elif a.strategy == "vp":
+        st = ValueReturn(tf_min, spec, max_hold_min=a.max_hold, adr_ref_pips=a.adr_ref or 70)
     else:
         st = DonchianTrend(tf_min, spec)
     res = run_backtest(bars, spec, st, a.equity, a.risk, slip, int(a.min_spread_pips * spec["pip"] / spec["point"]),
@@ -504,7 +681,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run")
     p.add_argument("--bars", required=True)
-    p.add_argument("--strategy", choices=["breakout", "pullback", "fade", "donchian"], default="breakout")
+    p.add_argument("--strategy", choices=["breakout", "pullback", "fade", "donchian", "sweep", "sweep-vp", "vp"],
+                   default="breakout")
+    p.add_argument("--max-hold", type=int, default=45, help="scalping strategies: minutes before a forced exit")
     p.add_argument("--resample", type=int, default=0, help="aggregate bars to this many minutes first")
     p.add_argument("--adr-ref", type=float, default=70.0,
                    help="pip settings assume this average daily range and are scaled per symbol; 0 = off")
