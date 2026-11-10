@@ -607,6 +607,17 @@ def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3
         if not sig:
             i += 1
             continue
+        if "sl_price" in sig:
+            # structural stop: a PRICE level. Measure it from the real fill (next bar's open, spread and slip in).
+            nb = bars[i + 1]
+            px = bar_spread_px(nb, spec["point"], spec.get("spread_points") or 0, floor_spread_points)
+            lg = sig["side"] == "long"
+            fill = nb["o"] + px + slip_pips * spec["pip"] if lg else nb["o"] - slip_pips * spec["pip"]
+            d = ((fill - sig["sl_price"]) if lg else (sig["sl_price"] - fill)) / spec["pip"]
+            if d <= 0 or d < sig.get("min_sl_pips", 0.0) or (sig.get("max_sl_pips") and d > sig["max_sl_pips"]):
+                i += 1
+                continue
+            sig = dict(sig, sl_pips=d, tp_pips=d * sig["rr"])
         stop_cost = sig["sl_pips"] + slip_pips          # size for the stop plus slippage
         lots = size_lots(eq, risk_pct, stop_cost, spec)
         if lots <= 0:
@@ -621,7 +632,10 @@ def run_backtest(bars, spec, strategy, equity=300.0, risk_pct=1.0, slip_pips=0.3
         peak = max(peak, eq)
         max_dd = max(max_dd, (peak - eq) / peak if peak > 0 else 1.0)
         t.update({"t_entry": bars[i + 1]["t"], "t_exit": bars[t["exit_index"]]["t"], "lots": lots,
-                  "pnl": pnl, "r": pnl / risk_money if risk_money else 0.0, "equity": eq})
+                  "pnl": pnl, "r": pnl / risk_money if risk_money else 0.0, "equity": eq,
+                  "sl_pips": sig["sl_pips"], "tp_pips": sig["tp_pips"], "risk_money": risk_money,
+                  "i_signal": i, "cost_pips_est": (bar_spread_px(bars[i + 1], spec["point"], spec.get("spread_points") or 0,
+                                                                  floor_spread_points) / spec["pip"] + 2 * slip_pips)})
         trades.append(t)
         if eq <= 0:
             break
