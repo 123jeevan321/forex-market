@@ -692,6 +692,11 @@ def cmd_run(a):
         if a.resample <= tf_min or a.resample % tf_min:
             raise BacktestError("--resample must be a multiple of the file's timeframe (%d min)" % tf_min)
         bars, tf_min = resample(bars, a.resample), a.resample
+    if a.spread_pips is not None:
+        # test another broker's costs: replace the recorded spread with a fixed one (pair it with --commission)
+        pts = a.spread_pips * spec["pip"] / spec["point"]
+        bars = [dict(b, spread=pts) for b in bars]
+        spec = dict(spec, spread_points=pts)
     # scale pip-based settings to this symbol's own daily range (reference: a 70-pip-a-day pair)
     adr = sorted(daily_adr(bars).values())
     k = (adr[len(adr) // 2] / (a.adr_ref * spec["pip"])) if adr and a.adr_ref else 1.0
@@ -736,7 +741,7 @@ def cmd_run(a):
     print("exits: " + ", ".join("%s %d" % kv for kv in sorted(reasons.items())))
     print("VERDICT: " + verdict(s_in, s_out) if s_out["trades"] else "VERDICT: no out-of-sample trades.")
     if a.write:
-        path = os.path.join("trader", "backtests", "%s_%s_%s.json" % (doc["symbol"], doc["tf"], a.strategy))
+        path = os.path.join("trader", "backtests", "%s_%s_%s%s.json" % (doc["symbol"], doc["tf"], a.strategy, "_" + a.tag if a.tag else ""))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump({"result": res, "params": {k: v for k, v in vars(a).items() if k != "fn"}}, f)
@@ -770,6 +775,9 @@ def main(argv=None):
     p.add_argument("--min-stop", type=float, default=8)
     p.add_argument("--slip", type=float, default=0.3, help="extra pips lost on each market fill / stop")
     p.add_argument("--min-spread-pips", type=float, default=0.0)
+    p.add_argument("--spread-pips", type=float, default=None,
+                   help="use this fixed spread instead of the one recorded in the bars (another broker's costs)")
+    p.add_argument("--tag", default="", help="added to the --write file name, e.g. the broker")
     p.add_argument("--commission", type=float, default=0.0, help="per lot, account currency")
     p.add_argument("--split", type=float, default=0.6, help="fraction of history that is in-sample")
     p.add_argument("--write", action="store_true")
