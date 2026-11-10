@@ -194,6 +194,7 @@ def cmd_spec(a):
 
 
 def cmd_bars(a):
+    spec = None
     if a.csv:
         bars, off = read_csv_bars(a.csv), 0
         symbol = a.symbol or os.path.splitext(os.path.basename(a.csv))[0]
@@ -203,6 +204,7 @@ def cmd_bars(a):
         mt5 = connect()
         try:
             bars, off = fetch_bars(mt5, a.symbol, a.tf, a.count, a.server_offset)
+            spec = symbol_spec(mt5.symbol_info(a.symbol), mt5.symbol_info_tick(a.symbol))
         finally:
             mt5.shutdown()
         symbol = a.symbol
@@ -213,7 +215,7 @@ def cmd_bars(a):
     print("data check: %s" % ("clean" if not problems else "%d problem(s), first: %s" % (len(problems), problems[0])))
     if a.write:
         path = os.path.join("trader", "bars", "%s_%s.json" % (symbol, a.tf))
-        write_json(path, {"symbol": symbol, "tf": a.tf, "server_offset_s": off, "bars": bars})
+        write_json(path, {"symbol": symbol, "tf": a.tf, "server_offset_s": off, "spec": spec, "bars": bars})
         print("wrote %s" % path)
 
 
